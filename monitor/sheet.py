@@ -95,7 +95,12 @@ def style(sheet: "PriceSheet") -> None:
     sid = ws.id
     widths = [320, 260, 110, 110, 90, 110, 110, 80, 140, 160, 140]
     money = {"type": "NUMBER", "pattern": "#,##0.00"}
-    reqs = [
+    # Remove our previous chart and colour rules so running this again doesn't duplicate them
+    meta = sheet.book.fetch_sheet_metadata({"fields": "sheets(properties.sheetId,charts.chartId,conditionalFormats)"})
+    old = next((s for s in meta["sheets"] if s["properties"]["sheetId"] == sid), {})
+    reqs = [{"deleteEmbeddedObject": {"objectId": c["chartId"]}} for c in old.get("charts", [])]
+    reqs += [{"deleteConditionalFormatRule": {"sheetId": sid, "index": 0}} for _ in old.get("conditionalFormats", [])]
+    reqs += [
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize"}}
@@ -106,6 +111,11 @@ def style(sheet: "PriceSheet") -> None:
             "range": {"sheetId": sid, "startRowIndex": 1, "startColumnIndex": COL[name], "endColumnIndex": COL[name] + 1},
             "cell": {"userEnteredFormat": {"numberFormat": money}}, "fields": "userEnteredFormat.numberFormat"}})
     change = {"sheetId": sid, "startRowIndex": 1, "startColumnIndex": COL["Change %"], "endColumnIndex": COL["Change %"] + 1}
+    # Values are already percents (-12 means -12%), so append the sign instead of using a % format
+    reqs.append({"repeatCell": {
+        "range": change,
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": '+0.00"%";-0.00"%";0"%"'}}},
+        "fields": "userEnteredFormat.numberFormat"}})
     for op, color in (("NUMBER_LESS", {"red": 0.8, "green": 0.94, "blue": 0.8}),
                       ("NUMBER_GREATER", {"red": 0.98, "green": 0.8, "blue": 0.8})):
         reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
@@ -142,4 +152,12 @@ def style(sheet: "PriceSheet") -> None:
             "properties": {"pixelSize": w}, "fields": "pixelSize"}}
         for i, w in enumerate([140, 260, 320, 90, 80])
     ]
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": hist.id, "startRowIndex": 1, "startColumnIndex": 3, "endColumnIndex": 4},
+        "cell": {"userEnteredFormat": {"numberFormat": money}}, "fields": "userEnteredFormat.numberFormat"}})
+    # Products first; drop the empty default tab Google creates with every new sheet
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": sid, "index": 0}, "fields": "index"}})
+    for other in sheet.book.worksheets():
+        if other.id not in (sid, hist.id) and not any(other.get_all_values()):
+            reqs.append({"deleteSheet": {"sheetId": other.id}})
     sheet.book.batch_update({"requests": reqs})
